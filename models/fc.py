@@ -54,8 +54,9 @@ class FCNet(nn.Module):
             y = y.detach()
 
         # Map measurements to video blocks
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         out = Variable(torch.zeros(
-            x.size(0), x.size(1), self.vectorized)).cuda()
+            x.size(0), x.size(1), self.vectorized)).to(device)
         for i in range(x.size(1)):
             out[:, i, :] = self.reconstruction(x[:, i, :])
 

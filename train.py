@@ -113,10 +113,15 @@ def main():
     logging.info("saving to %s", save_path)
     logging.debug("run arguments: %s", args)
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    torch.cuda.manual_seed(args.seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.seed)
+    else: 
+        torch.manual_seed(args.seed)
 
     if args.encoder_lr > 0:
         encoder_learn = True
@@ -134,7 +139,10 @@ def main():
         model = models.__dict__[args.arch](
             block_opts, mask_path=args.mask_path, mean=args.mean, std=args.std,
             noise=args.noise, encoder_learn=encoder_learn, p=args.bernoulli_p, K=args.layers_k)
-        model = torch.nn.DataParallel(model, device_ids=args.gpus).cuda()
+        
+    model = model.to(device)
+    if torch.cuda.is_available() and len(args.gpus) > 1:
+        model = torch.nn.DataParallel(model, device_ids=args.gpus)
 
     # define loss function (criterion) and optimizer
     mseloss = loss.EuclideanDistance(args.batch_size)
@@ -142,8 +150,8 @@ def main():
     # annual scedule
     if encoder_learn:
         optimizer = torch.optim.SGD([
-            {'params': model.module.measurements.parameters(), 'lr': args.encoder_lr},
-            {'params': model.module.reconstruction.parameters()}],
+            {'params': model.measurements.parameters(), 'lr': args.encoder_lr},
+            {'params': model.reconstruction.parameters()}],
             args.decoder_lr, momentum=args.momentum, weight_decay=args.weight_decay)
 
         def lambda1(epoch): return 0.0 if epoch >= args.encoder_annual[2] else (
@@ -155,7 +163,7 @@ def main():
             optimizer, lr_lambda=[lambda1, lambda2])
     else:
         optimizer = torch.optim.SGD([
-            {'params': model.module.reconstruction.parameters()}],
+            {'params': model.reconstruction.parameters()}],
             args.decoder_lr, momentum=args.momentum, weight_decay=args.weight_decay)
 
         scheduler = torch.optim.lr_scheduler.MultiStepLR(
@@ -219,7 +227,7 @@ def main():
 
         # train for one epoch
         train_loss = train(train_loader, model, optimizer, epoch,
-                           mseloss, encoder_learn, args.gradient_clipping)
+                           mseloss, encoder_learn, args.gradient_clipping, device)
 
         # Annual schedule enforcement
         scheduler.step()
@@ -237,7 +245,7 @@ def main():
             logging.info('Percentage of 1: {}'.format(perc_1))
 
         # evaluate on validation set
-        psnr = validate(val_loader, model, encoder_learn)
+        psnr = validate(val_loader, model, encoder_learn, device)
 
         # remember best psnr and save checkpoint
         is_best = psnr > best_psnr
@@ -262,7 +270,7 @@ def binarization(weights):
     return weights
 
 
-def train(train_loader, model, optimizer, epoch, mseloss, encoder_learn, gradient_clip):
+def train(train_loader, model, optimizer, epoch, mseloss, encoder_learn, gradient_clip, device):
     batch_time = metrics.AverageMeter()
     data_time = metrics.AverageMeter()
     losses = metrics.AverageMeter()
@@ -276,8 +284,8 @@ def train(train_loader, model, optimizer, epoch, mseloss, encoder_learn, gradien
         # measure data loading time
         data_time.update(time.time() - end)
 
-        target = video_blocks.cuda()
-        input_var = Variable(video_blocks.cuda())
+        target = video_blocks.to(device)
+        input_var = Variable(video_blocks.to(device))
         target_var = Variable(target)
 
         # compute output
@@ -320,12 +328,12 @@ def train(train_loader, model, optimizer, epoch, mseloss, encoder_learn, gradien
     return losses.avg
 
 
-def validate(val_loader, model, encoder_learn):
+def validate(val_loader, model, encoder_learn, device):
     batch_time = metrics.AverageMeter()
     psnr = metrics.AverageMeter()
 
     # switch to evaluate mode
-    model.cuda()
+    model.to(device)
     model.eval()
 
     # binarize weights
@@ -334,7 +342,7 @@ def validate(val_loader, model, encoder_learn):
 
     end = time.time()
     for i, (video_frames, pad_frame_size, patch_shape) in enumerate(val_loader):
-        video_input = video_frames.cuda()
+        video_input = video_frames.to(device)
         print(val_loader.dataset.videos[i])
 
         # compute output
